@@ -1,0 +1,66 @@
+# HDFS Dataset Configuration
+
+dataset:
+  name: "HDFS"
+  raw_log_path: "data/hdfs/HDFS.log"
+  output_dir: "data/hdfs/preprocessed_custom"
+  label_file: "data/hdfs/preprocessed/anomaly_label.csv"  # Use existing labels for validation
+
+parsing:
+  method: "drain"
+  depth: 4
+  sim_threshold: 0.4
+  max_children: 100
+
+  # HDFS log format: <Date> <Time> <Pid> <Level> <Component>: <Content>
+  regex_patterns:
+    # Extract structured fields
+    date: "\\d{6}"
+    time: "\\d{6}"
+    pid: "\\d+"
+    level: "INFO|WARN|ERROR|FATAL"
+    component: "[\\w\\$\\.]+"
+
+  # Content column to parse (after regex extraction)
+  content_column: "Content"
+
+sequencing:
+  grouping_strategy: "block_id"  # Group by BlockId
+  grouping_key: "BlockId"
+
+  # Extract BlockId from log content
+  block_id_regex: "(blk_-?\\d+)"
+
+  # Optional windowing
+  use_sliding_window: false
+  window_size: null
+
+  # Time-based windowing (not used for HDFS)
+  use_time_window: false
+  time_window_seconds: null
+
+features:
+  # Output formats
+  save_sequences: true          # NPZ format (x_data, y_data)
+  save_occurrence_matrix: true  # CSV with event counts
+  save_statistical: false       # Statistical features (optional)
+
+  # Sequence representation
+  event_representation: "event_id"  # "event_id" or "embedding"
+
+output:
+  save_templates: true
+  save_metadata: true
+  save_summary: true
+
+  # File naming
+  templates_file: "templates.csv"
+  sequences_file: "sequences.npz"
+  occurrence_file: "occurrence_matrix.csv"
+  metadata_file: "metadata.pkl"
+  summary_file: "summary.txt"
+
+logging:
+  level: "INFO"
+  save_log: true
+  log_file: "preprocessing.log"
