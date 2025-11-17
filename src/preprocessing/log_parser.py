@@ -1,8 +1,7 @@
-"""
-Log Parser Module
-
-Parses raw log files into structured templates using the Drain algorithm.
-Supports configurable regex patterns for different log formats.
+""" 
+    Log Parser Module 
+    Parse BGL (and other datasets) into consistent format compatible with HDFS.
+    Outputs: Parsed logs with EventIds and templates.
 """
 
 import re
@@ -10,309 +9,181 @@ import pandas as pd
 from drain3 import TemplateMiner
 from drain3.template_miner_config import TemplateMinerConfig
 from tqdm import tqdm
-from typing import Dict, List, Optional, Tuple
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class LogParser:
     """
-    Parse raw logs into structured templates using Drain algorithm.
+    Lightweight log parser using Drain algorithm.
 
-    The Drain algorithm groups similar log messages by creating a parse tree
-    based on log message structure, extracting templates with wildcards for
-    variable parts.
-
-    Example:
-        >>> parser = LogParser(depth=4, sim_th=0.4)
-        >>> df = parser.parse_log_file('logs.txt', regex_patterns={...})
-        >>> templates = parser.get_templates()
+    Purpose:
+        - Extract templates from raw logs
+        - Assign EventIds to log entries
+        - Prepare logs for sequence building
     """
 
-    def __init__(
-        self,
-        depth: int = 4,
-        sim_th: float = 0.4,
-        max_children: int = 100,
-        max_clusters: Optional[int] = None
-    ):
+    def __init__(self, depth=4, sim_th=0.4, max_children=100):
         """
-        Initialize Log Parser with Drain configuration.
+        Initialize Drain parser.
 
         Args:
-            depth: Depth of the parse tree (default: 4)
-                Higher depth = more specific grouping
-            sim_th: Similarity threshold (0-1, default: 0.4)
-                Higher threshold = stricter matching
+            depth: Drain tree depth (default: 4)
+            sim_th: Similarity threshold 0-1 (default: 0.4 = 40%)
             max_children: Max children per node (default: 100)
-            max_clusters: Max number of clusters/templates (default: None = unlimited)
         """
-        self.depth = depth
-        self.sim_th = sim_th
-        self.max_children = max_children
-
-        # Configure Drain
+        # Configure Drain3
         config = TemplateMinerConfig()
-        config.load({
-            'drain_depth': depth,
-            'drain_sim_th': sim_th,
-            'drain_max_children': max_children,
-            'drain_max_clusters': max_clusters
-        })
+        config.drain_depth = depth
+        config.drain_sim_th = sim_th
+        config.drain_max_children = max_children
+        config.drain_max_clusters = 1000  # Reasonable upper limit
 
         self.template_miner = TemplateMiner(config=config)
-        self.template_map = {}  # cluster_id -> template
-        self.cluster_id_map = {}  # cluster_id -> EventId (E1, E2, etc.)
-        self.event_counter = 1  # For generating E1, E2, E3, ...
+        self.templates = {}  # cluster_id -> template mapping
+        self.template_to_id = {}  # template -> EventId mapping
+        self.event_count = 0
 
-    def extract_fields(
-        self,
-        log_line: str,
-        regex_patterns: Dict[str, str]
-    ) -> Dict[str, str]:
+        logger.info(f"LogParser initialized: depth={depth}, sim_th={sim_th}")
+
+    def extract_content(self, log_line, regex_pattern=None):
         """
-        Extract structured fields from log line using regex patterns.
+        Extract log content using regex pattern.
 
         Args:
-            log_line: Raw log line string
-            regex_patterns: Dict of field_name -> regex_pattern
+            log_line: Raw log line
+            regex_pattern: Regex to extract content (if None, use whole line)
 
         Returns:
-            Dict of extracted fields and remaining content
-
-        Example:
-            >>> patterns = {'date': r'\\d{6}', 'time': r'\\d{6}'}
-            >>> fields = parser.extract_fields(log_line, patterns)
-            >>> # {'date': '081109', 'time': '203518', 'Content': '...'}
+            Extracted content string
         """
-        fields = {}
-        remaining = log_line.strip()
+        if regex_pattern is None:
+            return log_line.strip()
 
-        # Try to extract each pattern in order
-        for field_name, pattern in regex_patterns.items():
-            match = re.search(pattern, remaining)
-            if match:
-                fields[field_name] = match.group(0)
-                # Remove matched part from remaining string
-                remaining = remaining[:match.start()] + remaining[match.end():]
-                remaining = remaining.strip()
+        match = re.match(regex_pattern, log_line)
+        if match:
+            # Assume last group is content
+            return match.groups()[-1] if match.groups() else log_line.strip()
 
-        # Whatever is left is the content to parse
-        fields['Content'] = remaining
+        # Fallback: return whole line
+        return log_line.strip()
 
-        return fields
-
-    def parse_single_log(
-        self,
-        log_line: str,
-        regex_patterns: Optional[Dict[str, str]] = None
-    ) -> Dict[str, str]:
+    def parse_line(self, log_line, regex_pattern=None):
         """
         Parse a single log line.
 
         Args:
             log_line: Raw log line
-            regex_patterns: Optional patterns to extract structured fields
+            regex_pattern: Optional regex for content extraction
 
         Returns:
-            Dict with EventId, EventTemplate, and extracted fields
+            dict with EventId and EventTemplate
         """
-        result = {}
+        # Extract content
+        content = self.extract_content(log_line, regex_pattern)
 
-        # Extract structured fields if patterns provided
-        if regex_patterns:
-            fields = self.extract_fields(log_line, regex_patterns)
-            result.update(fields)
-            content = fields['Content']
-        else:
-            content = log_line.strip()
-            result['Content'] = content
+        # Run Drain
+        result = self.template_miner.add_log_message(content)
+        cluster_id = result['cluster_id']
+        template = result['template_mined']
 
-        # Parse content with Drain
-        drain_result = self.template_miner.add_log_message(content)
-        cluster_id = drain_result['cluster_id']
-        template = drain_result['template_mined']
+        # Map cluster_id to EventId
+        if cluster_id not in self.templates:
+            self.event_count += 1
+            event_id = f"E{self.event_count}"
+            self.templates[cluster_id] = {
+                'EventId': event_id,
+                'EventTemplate': template,
+                'Count': 0
+            }
+            self.template_to_id[template] = event_id
 
-        # Map cluster_id to EventId (E1, E2, etc.)
-        if cluster_id not in self.cluster_id_map:
-            event_id = f'E{self.event_counter}'
-            self.cluster_id_map[cluster_id] = event_id
-            self.template_map[event_id] = template
-            self.event_counter += 1
-        else:
-            event_id = self.cluster_id_map[cluster_id]
+        # Increment count
+        self.templates[cluster_id]['Count'] += 1
+        event_id = self.templates[cluster_id]['EventId']
 
-        result['EventId'] = event_id
-        result['EventTemplate'] = template
+        return {
+            'Content': content,
+            'EventId': event_id,
+            'EventTemplate': template
+        }
 
-        return result
-
-    def parse_log_file(
-        self,
-        log_file: str,
-        regex_patterns: Optional[Dict[str, str]] = None,
-        content_column: str = 'Content',
-        max_lines: Optional[int] = None,
-        show_progress: bool = True
-    ) -> pd.DataFrame:
+    def parse_file(self, log_file, regex_pattern=None, sample_size=None):
         """
-        Parse an entire log file.
+        Parse entire log file.
 
         Args:
             log_file: Path to log file
-            regex_patterns: Optional regex patterns for field extraction
-            content_column: Name of content column (default: 'Content')
-            max_lines: Optional limit on number of lines to process
-            show_progress: Show progress bar (default: True)
+            regex_pattern: Regex for content extraction
+            sample_size: If set, only parse first N lines (for testing)
 
         Returns:
             DataFrame with parsed logs
-
-        Example:
-            >>> patterns = {
-            ...     'date': r'\\d{6}',
-            ...     'time': r'\\d{6}',
-            ...     'pid': r'\\d+',
-            ...     'level': r'INFO|WARN|ERROR'
-            ... }
-            >>> df = parser.parse_log_file('hdfs.log', patterns)
         """
-        parsed_logs = []
+        logger.info(f"Parsing log file: {log_file}")
 
-        # Count lines for progress bar
-        if show_progress:
-            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                total_lines = sum(1 for _ in f)
-            if max_lines:
-                total_lines = min(total_lines, max_lines)
+        parsed_data = []
 
-        # Parse logs
         with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-            iterator = enumerate(f, 1)
-            if show_progress:
-                iterator = tqdm(iterator, total=total_lines, desc="Parsing logs")
+            lines = f.readlines()
 
-            for line_num, line in iterator:
-                if max_lines and line_num > max_lines:
-                    break
+            if sample_size:
+                lines = lines[:sample_size]
+                logger.info(f"Sampling first {sample_size} lines")
 
+            for idx, line in enumerate(tqdm(lines, desc="Parsing logs")):
                 if not line.strip():
-                    continue  # Skip empty lines
-
-                try:
-                    result = self.parse_single_log(line, regex_patterns)
-                    result['LineId'] = line_num
-                    parsed_logs.append(result)
-                except Exception as e:
-                    # Log parsing error but continue
-                    if show_progress:
-                        tqdm.write(f"Warning: Error parsing line {line_num}: {str(e)}")
                     continue
 
-        df = pd.DataFrame(parsed_logs)
+                try:
+                    parsed = self.parse_line(line, regex_pattern)
+                    parsed['LineId'] = idx + 1
+                    parsed['RawLog'] = line.strip()
+                    parsed_data.append(parsed)
+                except Exception as e:
+                    logger.warning(f"Failed to parse line {idx + 1}: {str(e)}")
+                    continue
 
-        # Reorder columns to put EventId and EventTemplate first
-        cols = ['LineId', 'EventId', 'EventTemplate']
-        other_cols = [c for c in df.columns if c not in cols]
-        df = df[cols + other_cols]
+        df = pd.DataFrame(parsed_data)
+
+        logger.info(f"Parsed {len(df)} logs")
+        logger.info(f"Discovered {len(self.templates)} unique templates")
 
         return df
 
-    def get_templates(self) -> pd.DataFrame:
+
+    def get_templates(self):
         """
         Get all discovered templates.
 
         Returns:
-            DataFrame with EventId and EventTemplate columns
+            DataFrame with EventId, EventTemplate, Count
         """
-        templates = [
-            {'EventId': event_id, 'EventTemplate': template}
-            for event_id, template in sorted(
-                self.template_map.items(),
-                key=lambda x: int(x[0][1:])  # Sort by numeric part of E1, E2, etc.
-            )
-        ]
-        return pd.DataFrame(templates)
+        templates_list = []
+        for cluster_id, info in self.templates.items():
+            templates_list.append({
+                'EventId': info['EventId'],
+                'EventTemplate': info['EventTemplate'],
+                'OccurrenceCount': info['Count']
+            })
 
-    def save_templates(self, output_file: str):
+        df = pd.DataFrame(templates_list)
+        df = df.sort_values('OccurrenceCount', ascending=False)
+
+        return df
+
+    def save_templates(self, output_file):
         """
-        Save templates to CSV file.
+        Save templates to CSV.
 
         Args:
-            output_file: Path to output CSV file
+            output_file: Path to save templates CSV
         """
-        templates_df = self.get_templates()
-        templates_df.to_csv(output_file, index=False)
-        print(f"✓ Saved {len(templates_df)} templates to {output_file}")
+        df_templates = self.get_templates()
+        df_templates.to_csv(output_file, index=False)
+        logger.info(f"Saved {len(df_templates)} templates to {output_file}")
 
-    def get_statistics(self) -> Dict:
-        """
-        Get parsing statistics.
+        return df_templates
 
-        Returns:
-            Dict with statistics about parsed logs and templates
-        """
-        return {
-            'total_templates': len(self.template_map),
-            'total_clusters': len(self.cluster_id_map),
-            'depth': self.depth,
-            'sim_threshold': self.sim_th,
-            'max_children': self.max_children
-        }
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    import os
-
-    # Test on HDFS logs (small sample)
-    print("=" * 80)
-    print("LOG PARSER TEST - HDFS Dataset")
-    print("=" * 80)
-
-    hdfs_log_file = "data/hdfs/HDFS.log"
-
-    if os.path.exists(hdfs_log_file):
-        # HDFS log format: <Date> <Time> <Pid> <Level> <Component>: <Content>
-        hdfs_patterns = {
-            'Date': r'\d{6}',
-            'Time': r'\d{6}',
-            'Pid': r'\d+',
-            'Level': r'INFO|WARN|ERROR|FATAL',
-            'Component': r'[\w\$\.]+'
-        }
-
-        # Parse first 1000 lines
-        parser = LogParser(depth=4, sim_th=0.4)
-
-        print(f"\nParsing first 1000 lines from {hdfs_log_file}...")
-        df = parser.parse_log_file(
-            hdfs_log_file,
-            regex_patterns=hdfs_patterns,
-            max_lines=1000,
-            show_progress=True
-        )
-
-        print(f"\n✓ Parsed {len(df)} log lines")
-        print(f"✓ Discovered {len(parser.get_templates())} unique templates")
-
-        # Show sample
-        print("\nSample parsed logs:")
-        print(df[['LineId', 'EventId', 'Level', 'Component']].head(10))
-
-        # Show templates
-        print("\nDiscovered templates:")
-        templates = parser.get_templates()
-        print(templates.to_string(index=False))
-
-        # Show statistics
-        print("\nParsing statistics:")
-        stats = parser.get_statistics()
-        for key, value in stats.items():
-            print(f"  {key}: {value}")
-
-        # Save templates
-        os.makedirs('test_output', exist_ok=True)
-        parser.save_templates('test_output/test_templates.csv')
-
-    else:
-        print(f"HDFS log file not found at {hdfs_log_file}")
-        print("Please ensure HDFS data is downloaded first.")

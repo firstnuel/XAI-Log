@@ -25,20 +25,18 @@ parsing:
   content_column: "Content"
 
 sequencing:
-  grouping_strategy: "session_window"  # Time-based windows for BGL
+  grouping_strategy: "sliding_window"  # Sliding window for BGL
 
   # Session window parameters
-  use_sliding_window: true
   window_size: 20  # events per window
   stride: 5        # sliding window stride
 
   # Alternative: time-based windowing
-  use_time_window: false
-  time_window_seconds: 3600  # 1 hour windows
+  # grouping_strategy: "time_window"
+  # time_window_seconds: 3600  # 1 hour windows
 
-  # Alternative: node-based grouping
-  # grouping_strategy: "node_id"
-  # grouping_key: "Node"
+  # Alternative: session-based grouping
+  # grouping_strategy: "session"
 
 features:
   save_sequences: true

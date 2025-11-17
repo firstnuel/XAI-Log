@@ -9,15 +9,13 @@ Components:
 """
 
 from .log_parser import LogParser
-
-# Import other modules as they are implemented
-# from .sequence_builder import SequenceBuilder
-# from .feature_extractor import FeatureExtractor
-# from .pipeline import PreprocessingPipeline
+from .sequence_builder import SequenceBuilder
+from .feature_extractor import FeatureExtractor
+from .pipeline import PreprocessingPipeline
 
 __all__ = [
     'LogParser',
-    # 'SequenceBuilder',
-    # 'FeatureExtractor',
-    # 'PreprocessingPipeline'
+    'SequenceBuilder',
+    'FeatureExtractor',
+    'PreprocessingPipeline'
 ]

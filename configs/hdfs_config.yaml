@@ -4,8 +4,7 @@ dataset:
   name: "HDFS"
   raw_log_path: "data/hdfs/HDFS.log"
   output_dir: "data/hdfs/preprocessed_custom"
-  label_file: "data/hdfs/preprocessed/anomaly_label.csv"  # Use existing labels for validation
-
+  label_file: "data/hdfs/preprocessed/anomaly_label.csv"  
 parsing:
   method: "drain"
   depth: 4
