@@ -159,4 +159,4 @@ This project is developed for academic research purposes.
 **Author**: Ikwunna Emmanuel \
 **Institution**: University of Oulu \
 **Thesis**: Explainable AI for Log-Based Anomaly Detection in Security Monitoring: Reasoning Pipelines and Cross-Dataset Evaluation \
-**Last Updated**: November 2025
+**Last Updated**: 18th November, 2025
