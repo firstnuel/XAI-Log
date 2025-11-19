@@ -1,8 +1,11 @@
 """
 Preprocessing Pipeline
 
-Main orchestrator that ties together:
-    LogParser → SequenceBuilder → FeatureExtractor → Save
+Main orchestrator that ties together various preprocessing stages based on a selected mode.
+Modes:
+- 'full': LogParser → SequenceBuilder → FeatureExtractor → Save
+- 'match': TemplateMatcher → SequenceBuilder → FeatureExtractor → Save
+- 'load': Load pre-existing features and sequences directly.
 
 Configuration-driven design using YAML files.
 """
@@ -14,8 +17,11 @@ import numpy as np
 import pickle
 from datetime import datetime
 import logging
+import shutil
 
+# from local package structure
 from .log_parser import LogParser
+from .template_matcher import TemplateMatcher, bgl_label_extractor, hdfs_label_extractor
 from .sequence_builder import SequenceBuilder
 from .feature_extractor import FeatureExtractor
 
@@ -25,55 +31,122 @@ logger = logging.getLogger(__name__)
 
 class PreprocessingPipeline:
     """
-    Complete preprocessing pipeline for log datasets.
-
-    Workflow:
-        1. Load configuration from YAML
-        2. Parse logs with LogParser
-        3. Build sequences with SequenceBuilder
-        4. Extract features with FeatureExtractor
-        5. Save all outputs
-        6. Generate summary report
+    Complete and flexible preprocessing pipeline for log datasets.
+    Supports multiple modes for different levels of pre-existing processing.
     """
 
     def __init__(self, config_path):
         """
         Initialize pipeline with configuration.
-
-        Args:
-            config_path: Path to YAML configuration file
         """
         logger.info(f"Loading configuration from {config_path}")
-
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
 
         self.dataset_name = self.config['dataset']['name']
         self.output_dir = self.config['dataset']['output_dir']
+        self.mode = self.config['dataset'].get('mode', 'full')  # 'full', 'match', or 'load'
 
-        # Create output directory
         os.makedirs(self.output_dir, exist_ok=True)
-
-        logger.info(f"Pipeline initialized for dataset: {self.dataset_name}")
+        logger.info(f"Pipeline initialized for dataset: {self.dataset_name} in '{self.mode}' mode.")
 
     def run(self, sample_size=None):
         """
-        Run complete preprocessing pipeline.
-
-        Args:
-            sample_size: If set, only process first N lines (for testing)
-
-        Returns:
-            summary: Dictionary with processing statistics
+        Run complete preprocessing pipeline based on the configured mode.
         """
         start_time = datetime.now()
         logger.info("=" * 70)
-        logger.info(f"Starting preprocessing pipeline for {self.dataset_name}")
+        logger.info(f"Starting preprocessing pipeline for {self.dataset_name} (mode: {self.mode})")
         logger.info("=" * 70)
 
+        summary = {}
+        if self.mode == 'load':
+            summary = self._load_preprocessed_data()
+        elif self.mode in ['full', 'match']:
+            summary = self._process_from_raw(sample_size)
+        else:
+            raise ValueError(f"Invalid mode specified: {self.mode}")
+
+        duration = (datetime.now() - start_time).total_seconds()
+        summary['duration_seconds'] = duration
+        summary['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        self._save_summary(summary)
+        self._print_summary(summary)
+
+        logger.info("\n" + "=" * 70)
+        logger.info("Pipeline completed successfully!")
+        logger.info("=" * 70)
+
+        return summary
+
+    def _load_preprocessed_data(self):
+        """
+        Handles the 'load' mode. Copies preprocessed files to the output directory.
+        """
+        logger.info("\n[Step 1/1] Loading pre-processed data...")
+        
+        load_config = self.config['loading']
+        source_dir = load_config['source_dir']
+        
+        # Files to copy
+        files_to_copy = load_config.get('files', [])
+        for file_name in files_to_copy:
+            src_path = os.path.join(source_dir, file_name)
+            dest_path = os.path.join(self.output_dir, file_name)
+            if os.path.exists(src_path):
+                shutil.copy(src_path, dest_path)
+                logger.info(f"Copied {src_path} to {dest_path}")
+            else:
+                logger.warning(f"Source file not found: {src_path}")
+
+        # Load sequences.npz to generate summary
+        npz_path = os.path.join(self.output_dir, 'sequences.npz')
+        if not os.path.exists(npz_path):
+            raise FileNotFoundError(f"sequences.npz not found in source_dir for summary generation.")
+
+        data = np.load(npz_path, allow_pickle=True)
+        sequences = data['sequences']
+        labels = data['labels']
+        
+        total_seqs = len(sequences)
+        has_labels = labels is not None and len(labels) > 0
+        anomaly_count = list(labels).count(1) if has_labels else 0
+
+        # Vocab size can be inferred from a copied vocab file
+        vocab_size = 0
+        vocab_path = os.path.join(self.output_dir, 'vocabulary.pkl')
+        if os.path.exists(vocab_path):
+            with open(vocab_path, 'rb') as f:
+                vocab = pickle.load(f)
+                vocab_size = len(vocab)
+
+        summary = {
+            'dataset': self.dataset_name,
+            'num_sequences': total_seqs,
+            'normal_sequences': total_seqs - anomaly_count,
+            'anomaly_sequences': anomaly_count,
+            'anomaly_rate': anomaly_count / total_seqs if total_seqs > 0 else 0,
+            'avg_sequence_length': np.mean([len(s) for s in sequences]) if total_seqs > 0 else 0,
+            'vocab_size': vocab_size,
+            'num_templates': load_config.get('num_templates', 0)
+        }
+        return summary
+
+    def _process_from_raw(self, sample_size=None):
+        """
+        Handles 'full' and 'match' modes.
+        """
         # Step 1: Parse logs
         logger.info("\n[Step 1/4] Parsing logs...")
         parsed_df = self._parse_logs(sample_size)
+
+        # Step 1.5: Filter rare templates if configured
+        if self.mode == 'full' and hasattr(self, 'parser'):
+            parse_config = self.config.get('parsing', {})
+            min_occurrence = parse_config.get('min_template_occurrence', 1)
+            if min_occurrence > 1:
+                parsed_df = self._filter_rare_events(parsed_df, min_occurrence)
 
         # Step 2: Build sequences
         logger.info("\n[Step 2/4] Building sequences...")
@@ -88,74 +161,131 @@ class PreprocessingPipeline:
         self._save_outputs(parsed_df, sequences, labels, metadata)
 
         # Generate summary
-        end_time = datetime.now()
-        duration = (end_time - start_time).total_seconds()
+        total_seqs = len(sequences)
+        has_labels = labels is not None and len(labels) > 0
+        anomaly_count = list(labels).count(1) if has_labels else 0
+        
+        num_templates = 0
+        if hasattr(self, 'parser'):
+            num_templates = len(self.parser.get_templates())
+        elif hasattr(self, 'matcher'):
+            num_templates = len(self.matcher.get_statistics())
 
         summary = {
             'dataset': self.dataset_name,
-            'timestamp': end_time.strftime('%Y-%m-%d %H:%M:%S'),
-            'duration_seconds': duration,
-            'num_templates': len(self.parser.get_templates()),
-            'num_sequences': len(sequences),
-            'normal_sequences': labels.count(0),
-            'anomaly_sequences': labels.count(1),
-            'anomaly_rate': labels.count(1) / len(labels) if len(labels) > 0 else 0,
-            'avg_sequence_length': np.mean([len(s) for s in sequences]),
-            'max_sequence_length': max(len(s) for s in sequences) if sequences else 0,
-            'min_sequence_length': min(len(s) for s in sequences) if sequences else 0,
+            'num_templates': num_templates,
+            'num_sequences': total_seqs,
+            'normal_sequences': list(labels).count(0) if has_labels else total_seqs,
+            'anomaly_sequences': anomaly_count,
+            'anomaly_rate': anomaly_count / total_seqs if total_seqs > 0 else 0,
+            'avg_sequence_length': np.mean([len(s) for s in sequences]) if total_seqs > 0 else 0,
             'vocab_size': feature_info['vocab_size']
         }
-
-        self._save_summary(summary)
-
-        logger.info("\n" + "=" * 70)
-        logger.info("Pipeline completed successfully!")
-        logger.info("=" * 70)
-        self._print_summary(summary)
-
         return summary
+
+    def _get_label_extractor(self, parse_config):
+        label_mode = parse_config.get('label_extraction', None)
+        if label_mode == 'bgl':
+            logger.info("Using BGL label extractor.")
+            return bgl_label_extractor
+        elif label_mode == 'hdfs':
+            label_file = self.config['dataset'].get('label_file')
+            if label_file:
+                logger.info(f"Using HDFS label extractor from {label_file}")
+                return hdfs_label_extractor(label_file)
+        return None
 
     def _parse_logs(self, sample_size=None):
         """
-        Step 1: Parse logs using LogParser.
+        Parse logs using LogParser ('full') or TemplateMatcher ('match').
         """
-        # Get parsing config
         parse_config = self.config['parsing']
-
-        # Initialize parser
-        self.parser = LogParser(
-            depth=parse_config.get('depth', 4),
-            sim_th=parse_config.get('sim_threshold', 0.4),
-            max_children=parse_config.get('max_children', 100)
-        )
-
-        # Get log file path
         log_file = self.config['dataset']['raw_log_path']
 
-        # Get regex pattern (optional)
-        regex_pattern = parse_config.get('regex_patterns', {}).get('full_pattern', None)
+        if self.mode == 'match':
+            logger.info("Using TemplateMatcher with pre-existing templates")
+            templates_file = parse_config.get('templates_file')
+            if not templates_file:
+                raise ValueError("templates_file must be specified for 'match' mode.")
 
-        # Parse logs
-        parsed_df = self.parser.parse_file(
-            log_file,
-            regex_pattern=regex_pattern,
-            sample_size=sample_size
-        )
+            label_extractor = self._get_label_extractor(parse_config)
+            content_regex = parse_config.get('content_regex', None)
 
-        logger.info(f"Parsing complete: {len(parsed_df)} logs, {len(self.parser.templates)} templates")
+            self.matcher = TemplateMatcher(
+                templates_file=templates_file,
+                label_extractor=label_extractor,
+                content_regex=content_regex
+            )
+            parsed_df = self.matcher.match_file(log_file, sample_size=sample_size)
+            logger.info(f"Matching complete: {len(parsed_df)} logs matched.")
+            
+        else: # 'full' mode
+            logger.info("Using LogParser with Drain3 for template discovery")
+            masking_patterns = parse_config.get('masking_patterns', [])
+            label_extractor = self._get_label_extractor(parse_config)
+
+            self.parser = LogParser(
+                depth=parse_config.get('depth', 4),
+                sim_th=parse_config.get('sim_threshold', 0.4),
+                max_children=parse_config.get('max_children', 100),
+                masking_patterns=masking_patterns,
+                label_extractor=label_extractor
+            )
+            regex_pattern = parse_config.get('log_line_pattern', None)
+            parsed_df = self.parser.parse_file(log_file, regex_pattern=regex_pattern, sample_size=sample_size)
+            logger.info(f"Parsing complete: {len(parsed_df)} logs, {len(self.parser.templates)} templates found.")
 
         return parsed_df
 
+    def _filter_rare_events(self, parsed_df, min_occurrence):
+        """
+        Filter out rare templates and map them to <UNK> token.
+
+        Args:
+            parsed_df: DataFrame with parsed logs
+            min_occurrence: Minimum occurrence to keep template
+
+        Returns:
+            Filtered DataFrame with rare events mapped to <UNK>
+        """
+        # Get filtered templates
+        filtered_templates = self.parser.filter_templates(min_occurrence)
+        valid_event_ids = set(filtered_templates['EventId'])
+
+        # Count how many logs will be affected
+        total_logs = len(parsed_df)
+        rare_logs = (~parsed_df['EventId'].isin(valid_event_ids)).sum()
+
+        logger.info(f"Mapping {rare_logs:,} logs ({rare_logs/total_logs*100:.2f}%) with rare templates to <UNK>")
+
+        # Map rare EventIds to <UNK>
+        parsed_df['EventId'] = parsed_df['EventId'].apply(
+            lambda x: x if x in valid_event_ids else '<UNK>'
+        )
+
+        # Update EventTemplate for <UNK>
+        parsed_df.loc[parsed_df['EventId'] == '<UNK>', 'EventTemplate'] = '<UNK>'
+
+        return parsed_df
+
+    def _get_label_extractor(self, parse_config):
+        label_mode = parse_config.get('label_extraction', None)
+        if label_mode == 'bgl':
+            logger.info("Using BGL label extractor.")
+            return bgl_label_extractor
+        elif label_mode == 'hdfs':
+            label_file = self.config['dataset'].get('label_file')
+            if label_file:
+                logger.info(f"Using HDFS label extractor from {label_file}")
+                return hdfs_label_extractor(label_file)
+        return None
+
     def _build_sequences(self, parsed_df):
         """
-        Step 2: Build sequences using SequenceBuilder.
+        Build sequences using SequenceBuilder.
         """
-        # Get sequencing config
         seq_config = self.config['sequencing']
-
-        # Initialize sequence builder
         strategy = seq_config.get('grouping_strategy', 'block_id')
-
         kwargs = {}
         if strategy == 'sliding_window':
             kwargs['window_size'] = seq_config.get('window_size', 20)
@@ -165,80 +295,70 @@ class PreprocessingPipeline:
         elif strategy == 'block_id':
             kwargs['block_id_regex'] = seq_config.get('block_id_regex', r'(blk_-?\d+)')
 
-        self.seq_builder = SequenceBuilder(
-            grouping_strategy=strategy,
-            **kwargs
-        )
-
-        # Build sequences
+        self.seq_builder = SequenceBuilder(grouping_strategy=strategy, **kwargs)
+        label_col = 'Label' if 'Label' in parsed_df.columns else None
         sequences, labels, metadata = self.seq_builder.build_sequences(
             parsed_df,
             event_column='EventId',
-            label_column='Label',
+            label_column=label_col,
             content_column='Content'
         )
-
         logger.info(f"Sequence building complete: {len(sequences)} sequences")
-
         return sequences, labels, metadata
 
     def _extract_features(self, sequences, labels):
         """
-        Step 3: Extract features using FeatureExtractor.
+        Extract features using FeatureExtractor.
         """
-        # Initialize feature extractor
         self.feature_extractor = FeatureExtractor()
-
-        # Create vocabulary
-        vocab = self.feature_extractor.create_vocabulary(sequences)
-
-        # Save to NPZ
+        self.feature_extractor.create_vocabulary(sequences)
+        
         output_file = os.path.join(self.output_dir, 'sequences.npz')
         info = self.feature_extractor.save_to_npz(sequences, labels, output_file)
 
-        # Optionally save occurrence matrix
         if self.config['features'].get('save_occurrence_matrix', False):
-            occurrence_matrix = self.feature_extractor.sequences_to_occurrence_matrix(sequences)
-            occurrence_df = pd.DataFrame(occurrence_matrix)
-            occurrence_df['Label'] = labels
-            occurrence_file = os.path.join(self.output_dir, 'occurrence_matrix.csv')
-            occurrence_df.to_csv(occurrence_file, index=False)
-            logger.info(f"Saved occurrence matrix to {occurrence_file}")
+            matrix = self.feature_extractor.sequences_to_occurrence_matrix(sequences)
+            df = pd.DataFrame(matrix)
+            if labels is not None and len(labels) > 0: df['Label'] = labels
+            df.to_csv(os.path.join(self.output_dir, 'occurrence_matrix.csv'), index=False)
+            logger.info(f"Saved occurrence matrix.")
 
-        # Optionally save statistical features
         if self.config['features'].get('save_statistical', False):
-            stat_features = self.feature_extractor.extract_statistical_features(sequences)
-            stat_features['Label'] = labels
-            stat_file = os.path.join(self.output_dir, 'statistical_features.csv')
-            stat_features.to_csv(stat_file, index=False)
-            logger.info(f"Saved statistical features to {stat_file}")
+            stats = self.feature_extractor.extract_statistical_features(sequences)
+            if labels is not None and len(labels) > 0: stats['Label'] = labels
+            stats.to_csv(os.path.join(self.output_dir, 'statistical_features.csv'), index=False)
+            logger.info(f"Saved statistical features.")
 
         logger.info("Feature extraction complete")
-
         return info
 
     def _save_outputs(self, parsed_df, sequences, labels, metadata):
         """
-        Step 4: Save all outputs.
+        Save all outputs for 'full' and 'match' modes.
         """
-        # Save templates
-        if self.config['output'].get('save_templates', True):
+        output_config = self.config.get('output', {})
+        
+        if output_config.get('save_templates', True):
             templates_file = os.path.join(self.output_dir, 'templates.csv')
-            self.parser.save_templates(templates_file)
+            if self.mode == 'full' and hasattr(self, 'parser'):
+                # Get min_occurrence from parsing config
+                parse_config = self.config.get('parsing', {})
+                min_occurrence = parse_config.get('min_template_occurrence', 1)
+                self.parser.save_templates(templates_file, min_occurrence=min_occurrence)
+            elif self.mode == 'match' and hasattr(self, 'matcher'):
+                self.matcher.get_statistics().to_csv(templates_file, index=False)
+                logger.info(f"Copied templates to {templates_file}")
 
-        # Save vocabulary
         vocab_file = os.path.join(self.output_dir, 'vocabulary.pkl')
         self.feature_extractor.save_vocabulary(vocab_file)
 
-        # Save metadata
-        if self.config['output'].get('save_metadata', True):
+        if output_config.get('save_metadata', True):
             metadata_file = os.path.join(self.output_dir, 'metadata.pkl')
             with open(metadata_file, 'wb') as f:
                 pickle.dump(metadata, f)
             logger.info(f"Saved metadata to {metadata_file}")
 
-        # Optionally save parsed DataFrame
-        if self.config['output'].get('save_parsed_logs', False):
+        if output_config.get('save_parsed_logs', False):
             parsed_file = os.path.join(self.output_dir, 'parsed_logs.csv')
             parsed_df.to_csv(parsed_file, index=False)
             logger.info(f"Saved parsed logs to {parsed_file}")
@@ -247,20 +367,14 @@ class PreprocessingPipeline:
 
     def _save_summary(self, summary):
         """
-        Save summary statistics.
+        Save summary statistics to a text file.
         """
         summary_file = os.path.join(self.output_dir, 'summary.txt')
-
         with open(summary_file, 'w') as f:
             f.write(f"Preprocessing Summary - {self.dataset_name}\n")
             f.write("=" * 70 + "\n\n")
-
             for key, value in summary.items():
-                if isinstance(value, float):
-                    f.write(f"{key}: {value:.4f}\n")
-                else:
-                    f.write(f"{key}: {value}\n")
-
+                f.write(f"{key:25s}: {value:.4f}\n" if isinstance(value, float) else f"{key:25s}: {value}\n")
         logger.info(f"Saved summary to {summary_file}")
 
     def _print_summary(self, summary):
@@ -270,15 +384,9 @@ class PreprocessingPipeline:
         print("\n" + "=" * 70)
         print(f"PREPROCESSING SUMMARY - {self.dataset_name}")
         print("=" * 70)
-
         for key, value in summary.items():
-            if isinstance(value, float):
-                print(f"{key:25s}: {value:.4f}")
-            else:
-                print(f"{key:25s}: {value}")
-
+            print(f"{key:25s}: {value:.4f}" if isinstance(value, float) else f"{key:25s}: {value}")
         print("=" * 70)
-
 
 # CLI interface
 if __name__ == "__main__":
@@ -291,9 +399,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Run pipeline
     pipeline = PreprocessingPipeline(args.config)
-    summary = pipeline.run(sample_size=args.sample)
-
-    print("\nPipeline completed successfully!")
-    print(f"Output directory: {pipeline.output_dir}")
+    pipeline.run(sample_size=args.sample)

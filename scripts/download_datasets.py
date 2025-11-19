@@ -10,15 +10,17 @@ import tarfile
 def download_and_extract(url, data_dir='data'):
     """
     Download a file, check if it's compressed, and extract if needed.
-    
+
     Args:
         url: URL to download from
         data_dir: Directory to save and extract files (default: 'data')
     """
     # Create data directory if it doesn't exist
     os.makedirs(data_dir, exist_ok=True)
-    
-    filepath = os.path.join(data_dir, url)
+
+    # Extract filename from URL
+    filename = url.split('/')[-1]
+    filepath = os.path.join(data_dir, filename)
     
     # Download the file
     print(f"Downloading {url}...")

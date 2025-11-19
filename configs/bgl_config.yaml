@@ -1,61 +1,53 @@
 # BGL Dataset Configuration
-
 dataset:
   name: "BGL"
+  mode: "full"
   raw_log_path: "data/bgl/raw/BGL.log"
   output_dir: "data/bgl/preprocessed"
-  label_file: null  # Will be extracted from logs or provided separately
+  label_file: null
 
 parsing:
-  method: "drain"
   depth: 4
-  sim_threshold: 0.5  # BGL might need different threshold
+  sim_threshold: 0.4
   max_children: 100
 
-  # BGL log format: <Label> <Timestamp> <Date> <Node> <Time> <NodeRepeat> <Type> <Component> <Level> <Content>
-  regex_patterns:
-    label: "^-|\\w+"
-    timestamp: "\\d{10}"
-    date: "\\d{4}\\.\\d{2}\\.\\d{2}"
-    node: "R\\d{2}-M\\d-N\\d-C:J\\d{2}-U\\d{2}"
-    time: "\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d+"
-    type: "RAS|KERNEL"
-    level: "INFO|WARN|ERROR|FATAL|SEVERE"
+  log_line_pattern: '^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)$'
 
-  content_column: "Content"
+  label_extraction: "bgl"
+
+  masking_patterns:
+  # Custom masking patterns for BGL logs
+    - pattern: '\d{4}-\d{2}-\d{2}-\d{2}\.\d{2}\.\d{2}\.\d+'
+      mask: '<TS>'
+
+    - pattern: '\d{4}\.\d{2}\.\d{2}'
+      mask: '<DATE>'
+
+    - pattern: 'R\d+-M\d+-N\d+-C:J\d+-U\d+'
+      mask: '<NODE>'
+
+    - pattern: '\b(A|B|C)\b'
+      mask: '<PLANE>'
+
+    - pattern: '\b(X\+|X-|Y\+|Y-|Z\+|Z-)\b'
+      mask: '<AXIS>'
+
+    - pattern: '\b\d+\b'
+      mask: '<NUM>'
+
+  min_template_occurrence: 5
+
 
 sequencing:
-  grouping_strategy: "sliding_window"  # Sliding window for BGL
-
-  # Session window parameters
-  window_size: 20  # events per window
-  stride: 5        # sliding window stride
-
-  # Alternative: time-based windowing
-  # grouping_strategy: "time_window"
-  # time_window_seconds: 3600  # 1 hour windows
-
-  # Alternative: session-based grouping
-  # grouping_strategy: "session"
+  grouping_strategy: "sliding_window"
+  window_size: 20
+  stride: 5
 
 features:
-  save_sequences: true
-  save_occurrence_matrix: false  # Not needed for testing
+  save_occurrence_matrix: true
   save_statistical: false
-
-  event_representation: "event_id"
 
 output:
   save_templates: true
   save_metadata: true
-  save_summary: true
-
-  templates_file: "templates.csv"
-  sequences_file: "sequences.npz"
-  metadata_file: "metadata.pkl"
-  summary_file: "summary.txt"
-
-logging:
-  level: "INFO"
-  save_log: true
-  log_file: "preprocessing.log"
+  save_parsed_logs: false

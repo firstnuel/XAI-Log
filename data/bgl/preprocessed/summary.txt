@@ -1,0 +1,13 @@
+Preprocessing Summary - BGL
+======================================================================
+
+dataset                  : BGL
+num_templates            : 1435
+num_sequences            : 949589
+normal_sequences         : 868556
+anomaly_sequences        : 81033
+anomaly_rate             : 0.0853
+avg_sequence_length      : 20.0000
+vocab_size               : 371
+duration_seconds         : 70.2730
+timestamp                : 2025-11-19 16:30:57

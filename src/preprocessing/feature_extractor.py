@@ -2,7 +2,7 @@
 Feature Extractor Module
 
 Convert log sequences into model-ready formats.
-Outputs: NPZ format (compatible with HDFS preprocessed data)
+Outputs: NPZ format 
 """
 
 import numpy as np
@@ -10,6 +10,8 @@ import pandas as pd
 from collections import Counter
 import pickle
 import logging
+from typing import List, Dict, Optional, Any
+from numpy.typing import NDArray
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,15 +27,15 @@ class FeatureExtractor:
         - Statistical: Basic sequence statistics
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize FeatureExtractor."""
-        self.vocabulary = None
-        self.event_to_idx = None
-        self.idx_to_event = None
+        self.vocabulary: Optional[Dict[str, int]] = None
+        self.event_to_idx: Optional[Dict[str, int]] = None
+        self.idx_to_event: Optional[Dict[int, str]] = None
 
         logger.info("FeatureExtractor initialized")
 
-    def create_vocabulary(self, sequences):
+    def create_vocabulary(self, sequences: List[List[str]]) -> Dict[str, int]:
         """
         Create event vocabulary from sequences.
 
@@ -44,7 +46,7 @@ class FeatureExtractor:
             vocabulary: Dict mapping event -> index
         """
         # Collect all unique events
-        all_events = set()
+        all_events: set[str] = set()
         for seq in sequences:
             all_events.update(seq)
 
@@ -64,7 +66,12 @@ class FeatureExtractor:
 
         return self.vocabulary
 
-    def sequences_to_matrix(self, sequences, vocabulary=None, max_length=None):
+    def sequences_to_matrix(
+        self,
+        sequences: List[List[str]],
+        vocabulary: Optional[Dict[str, int]] = None,
+        max_length: Optional[int] = None
+    ) -> NDArray[np.int32]:
         """
         Convert sequences to padded matrix.
 
@@ -90,13 +97,13 @@ class FeatureExtractor:
         logger.info(f"Converting {len(sequences)} sequences to matrix (max_length={max_length})")
 
         # Convert sequences to indices
-        indexed_sequences = []
+        indexed_sequences: List[List[int]] = []
         for seq in sequences:
             indexed_seq = [self.event_to_idx.get(event, 0) for event in seq]
             indexed_sequences.append(indexed_seq)
 
         # Pad sequences
-        matrix = np.zeros((len(indexed_sequences), max_length), dtype=np.int32)
+        matrix: NDArray[np.int32] = np.zeros((len(indexed_sequences), max_length), dtype=np.int32)
 
         for i, seq in enumerate(indexed_sequences):
             seq_len = min(len(seq), max_length)
@@ -106,7 +113,11 @@ class FeatureExtractor:
 
         return matrix
 
-    def sequences_to_occurrence_matrix(self, sequences, vocabulary=None):
+    def sequences_to_occurrence_matrix(
+        self,
+        sequences: List[List[str]],
+        vocabulary: Optional[Dict[str, int]] = None
+    ) -> NDArray[np.int32]:
         """
         Convert sequences to occurrence matrix (event count vectors).
 
@@ -126,11 +137,11 @@ class FeatureExtractor:
 
         logger.info(f"Creating occurrence matrix for {len(sequences)} sequences")
 
-        occurrence_matrix = np.zeros((len(sequences), vocab_size), dtype=np.int32)
+        occurrence_matrix: NDArray[np.int32] = np.zeros((len(sequences), vocab_size), dtype=np.int32)
 
         for i, seq in enumerate(sequences):
             # Count events in sequence
-            event_counts = Counter(seq)
+            event_counts: Counter[str] = Counter(seq)
 
             for event, count in event_counts.items():
                 if event in vocabulary:
@@ -141,7 +152,7 @@ class FeatureExtractor:
 
         return occurrence_matrix
 
-    def extract_statistical_features(self, sequences):
+    def extract_statistical_features(self, sequences: List[List[str]]) -> pd.DataFrame:
         """
         Extract statistical features from sequences.
 
@@ -153,20 +164,20 @@ class FeatureExtractor:
         """
         logger.info(f"Extracting statistical features for {len(sequences)} sequences")
 
-        features = []
+        features: List[Dict[str, Any]] = []
 
         for seq in sequences:
             # Basic statistics
             seq_len = len(seq)
-            event_counts = Counter(seq)
+            event_counts: Counter[str] = Counter(seq)
             unique_events = len(event_counts)
 
             # Event diversity (entropy)
             if seq_len > 0:
-                probs = np.array(list(event_counts.values())) / seq_len
-                entropy = -np.sum(probs * np.log2(probs + 1e-10))
+                probs: NDArray[np.float64] = np.array(list(event_counts.values())) / seq_len
+                entropy: float = -np.sum(probs * np.log2(probs + 1e-10))
             else:
-                entropy = 0
+                entropy = 0.0
 
             # Most common event
             max_freq = max(event_counts.values()) if event_counts else 0
@@ -176,8 +187,8 @@ class FeatureExtractor:
                 'unique_events': unique_events,
                 'entropy': entropy,
                 'max_event_freq': max_freq,
-                'repetition_rate': max_freq / seq_len if seq_len > 0 else 0,
-                'diversity': unique_events / seq_len if seq_len > 0 else 0
+                'repetition_rate': max_freq / seq_len if seq_len > 0 else 0.0,
+                'diversity': unique_events / seq_len if seq_len > 0 else 0.0
             })
 
         df_features = pd.DataFrame(features)
@@ -186,7 +197,14 @@ class FeatureExtractor:
 
         return df_features
 
-    def save_to_npz(self, sequences, labels, output_file, vocabulary=None, max_length=None):
+    def save_to_npz(
+        self,
+        sequences: List[List[str]],
+        labels: List[int],
+        output_file: str,
+        vocabulary: Optional[Dict[str, int]] = None,
+        max_length: Optional[int] = None
+    ) -> Dict[str, int]:
         """
         Save sequences and labels to NPZ format (compatible with HDFS format).
 
@@ -204,7 +222,7 @@ class FeatureExtractor:
         seq_matrix = self.sequences_to_matrix(sequences, vocabulary, max_length)
 
         # Convert labels to array
-        labels_array = np.array(labels, dtype=np.int32)
+        labels_array: NDArray[np.int32] = np.array(labels, dtype=np.int32)
 
         # Save to NPZ
         np.savez_compressed(
@@ -221,12 +239,12 @@ class FeatureExtractor:
         return {
             'num_sequences': len(sequences),
             'max_length': seq_matrix.shape[1],
-            'vocab_size': len(self.vocabulary),
+            'vocab_size': len(self.vocabulary) if self.vocabulary else 0,
             'normal_count': int(np.sum(labels_array == 0)),
             'anomaly_count': int(np.sum(labels_array == 1))
         }
 
-    def save_vocabulary(self, output_file):
+    def save_vocabulary(self, output_file: str) -> None:
         """
         Save vocabulary to pickle file.
 
@@ -241,7 +259,7 @@ class FeatureExtractor:
 
         logger.info(f"Saved vocabulary to {output_file}")
 
-    def load_vocabulary(self, vocab_file):
+    def load_vocabulary(self, vocab_file: str) -> Dict[str, int]:
         """
         Load vocabulary from pickle file.
 

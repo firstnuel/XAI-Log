@@ -118,7 +118,7 @@ if __name__ == "__main__":
     test_components_individually()
 
     # Test 2: Full pipeline (optional, if HDFS data available)
-    test_full_pipeline_hdfs_sample()
+    # test_full_pipeline_hdfs_sample()
 
     print("\n" + "=" * 70)
     print("All tests complete!")

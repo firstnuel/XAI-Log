@@ -9,10 +9,17 @@ import pandas as pd
 import numpy as np
 import re
 from collections import defaultdict
+from typing import List, Tuple, Dict, Any, Optional, Literal, Union
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Type aliases for clarity
+SequenceList = List[List[Any]]
+LabelList = List[int]
+MetadataList = List[Dict[str, Any]]
+GroupingStrategy = Literal['block_id', 'session', 'sliding_window', 'time_window']
 
 
 class SequenceBuilder:
@@ -26,7 +33,11 @@ class SequenceBuilder:
         - 'time_window': Time-based session windows
     """
 
-    def __init__(self, grouping_strategy='block_id', **kwargs):
+    def __init__(
+        self, 
+        grouping_strategy: GroupingStrategy = 'block_id', 
+        **kwargs: Any
+    ) -> None:
         """
         Initialize SequenceBuilder.
 
@@ -38,15 +49,15 @@ class SequenceBuilder:
                 - time_window_seconds: For time_window (default: 3600)
                 - block_id_regex: Regex to extract block IDs (default: r'(blk_-?\d+)')
         """
-        self.grouping_strategy = grouping_strategy
-        self.window_size = kwargs.get('window_size', 20)
-        self.stride = kwargs.get('stride', 1)
-        self.time_window_seconds = kwargs.get('time_window_seconds', 3600)
-        self.block_id_regex = kwargs.get('block_id_regex', r'(blk_-?\d+)')
+        self.grouping_strategy: GroupingStrategy = grouping_strategy
+        self.window_size: int = kwargs.get('window_size', 20)
+        self.stride: int = kwargs.get('stride', 1)
+        self.time_window_seconds: float = kwargs.get('time_window_seconds', 3600)
+        self.block_id_regex: str = kwargs.get('block_id_regex', r'(blk_-?\d+)')
 
         logger.info(f"SequenceBuilder initialized: strategy={grouping_strategy}")
 
-    def extract_block_id(self, content):
+    def extract_block_id(self, content: str) -> Optional[str]:
         """
         Extract block ID from log content using regex.
 
@@ -61,8 +72,14 @@ class SequenceBuilder:
             return match.group(1)
         return None
 
-    def build_sequences(self, df, event_column='EventId', label_column='Label',
-                       content_column='Content', time_column=None):
+    def build_sequences(
+        self, 
+        df: pd.DataFrame, 
+        event_column: str = 'EventId', 
+        label_column: str = 'Label',
+        content_column: str = 'Content', 
+        time_column: Optional[str] = None
+    ) -> Tuple[SequenceList, LabelList, MetadataList]:
         """
         Build sequences from parsed DataFrame.
 
@@ -97,9 +114,24 @@ class SequenceBuilder:
         else:
             raise ValueError(f"Unknown grouping strategy: {self.grouping_strategy}")
 
-    def _build_block_sequences(self, df, event_column, label_column, content_column):
+    def _build_block_sequences(
+        self, 
+        df: pd.DataFrame, 
+        event_column: str, 
+        label_column: str, 
+        content_column: str
+    ) -> Tuple[SequenceList, LabelList, MetadataList]:
         """
         Group logs by BlockId (HDFS style).
+        
+        Args:
+            df: Input DataFrame
+            event_column: Column name for event IDs
+            label_column: Column name for labels
+            content_column: Column name for log content
+            
+        Returns:
+            Tuple of (sequences, labels, metadata)
         """
         logger.info("Extracting block IDs from logs...")
 
@@ -110,21 +142,21 @@ class SequenceBuilder:
         df_with_blocks = df[df['BlockId'].notna()].copy()
         logger.info(f"Found {len(df_with_blocks)} logs with BlockId out of {len(df)}")
 
-        sequences = []
-        labels = []
-        metadata = []
+        sequences: SequenceList = []
+        labels: LabelList = []
+        metadata: MetadataList = []
 
         # Group by BlockId
         grouped = df_with_blocks.groupby('BlockId')
 
         for block_id, group_df in grouped:
             # Extract event sequence
-            event_seq = group_df[event_column].tolist()
+            event_seq: List[Any] = group_df[event_column].tolist()
 
             # Determine label (if label_column exists)
             if label_column in group_df.columns:
                 # Label is anomaly if ANY log in the block is anomaly
-                label = 1 if (group_df[label_column] == 'Anomaly').any() else 0
+                label: int = 1 if (group_df[label_column] == 'Anomaly').any() else 0
             else:
                 label = 0  # Default to normal if no labels
 
@@ -141,29 +173,44 @@ class SequenceBuilder:
 
         return sequences, labels, metadata
 
-    def _build_session_sequences(self, df, event_column, label_column, content_column):
+    def _build_session_sequences(
+        self, 
+        df: pd.DataFrame, 
+        event_column: str, 
+        label_column: str, 
+        content_column: str
+    ) -> Tuple[SequenceList, LabelList, MetadataList]:
         """
         Group logs by SessionId (if available in DataFrame).
+        
+        Args:
+            df: Input DataFrame
+            event_column: Column name for event IDs
+            label_column: Column name for labels
+            content_column: Column name for log content
+            
+        Returns:
+            Tuple of (sequences, labels, metadata)
         """
         if 'SessionId' not in df.columns:
             logger.warning("SessionId column not found, assigning sequential session IDs")
             # Simple fallback: create sessions of fixed size
-            session_size = self.window_size
+            session_size: int = self.window_size
             df['SessionId'] = df.index // session_size
 
-        sequences = []
-        labels = []
-        metadata = []
+        sequences: SequenceList = []
+        labels: LabelList = []
+        metadata: MetadataList = []
 
         # Group by SessionId
         grouped = df.groupby('SessionId')
 
         for session_id, group_df in grouped:
-            event_seq = group_df[event_column].tolist()
+            event_seq: List[Any] = group_df[event_column].tolist()
 
             # Determine label
             if label_column in group_df.columns:
-                label = 1 if (group_df[label_column] == 'Anomaly').any() else 0
+                label: int = 1 if (group_df[label_column] == 'Anomaly').any() else 0
             else:
                 label = 0
 
@@ -180,29 +227,42 @@ class SequenceBuilder:
 
         return sequences, labels, metadata
 
-    def _build_sliding_window_sequences(self, df, event_column, label_column):
+    def _build_sliding_window_sequences(
+        self, 
+        df: pd.DataFrame, 
+        event_column: str, 
+        label_column: str
+    ) -> Tuple[SequenceList, LabelList, MetadataList]:
         """
         Create sequences using sliding window.
+        
+        Args:
+            df: Input DataFrame
+            event_column: Column name for event IDs
+            label_column: Column name for labels
+            
+        Returns:
+            Tuple of (sequences, labels, metadata)
         """
-        events = df[event_column].tolist()
+        events: List[Any] = df[event_column].tolist()
 
         # Get labels if available
         if label_column in df.columns:
-            log_labels = df[label_column].tolist()
+            log_labels: List[Union[int, str]] = df[label_column].tolist()
         else:
             log_labels = [0] * len(events)
 
-        sequences = []
-        labels = []
-        metadata = []
+        sequences: SequenceList = []
+        labels: LabelList = []
+        metadata: MetadataList = []
 
         # Slide window over events
         for i in range(0, len(events) - self.window_size + 1, self.stride):
-            window = events[i:i + self.window_size]
-            window_labels = log_labels[i:i + self.window_size]
+            window: List[Any] = events[i:i + self.window_size]
+            window_labels: List[Union[int, str]] = log_labels[i:i + self.window_size]
 
             # Sequence is anomaly if ANY event in window is anomaly
-            label = 1 if 1 in window_labels or 'Anomaly' in window_labels else 0
+            label: int = 1 if 1 in window_labels or 'Anomaly' in window_labels else 0
 
             sequences.append(window)
             labels.append(label)
@@ -218,9 +278,24 @@ class SequenceBuilder:
 
         return sequences, labels, metadata
 
-    def _build_time_window_sequences(self, df, event_column, label_column, time_column):
+    def _build_time_window_sequences(
+        self, 
+        df: pd.DataFrame, 
+        event_column: str, 
+        label_column: str, 
+        time_column: str
+    ) -> Tuple[SequenceList, LabelList, MetadataList]:
         """
         Create sequences based on time windows (session windows).
+        
+        Args:
+            df: Input DataFrame
+            event_column: Column name for event IDs
+            label_column: Column name for labels
+            time_column: Column name for timestamps
+            
+        Returns:
+            Tuple of (sequences, labels, metadata)
         """
         # Ensure time column is datetime
         df = df.copy()
@@ -236,87 +311,37 @@ class SequenceBuilder:
         # Create session IDs based on time gaps
         df['SessionId'] = (df['TimeDiff'] > self.time_window_seconds).cumsum()
 
-        sequences = []
-        labels = []
-        metadata = []
+        sequences: SequenceList = []
+        labels: LabelList = []
+        metadata: MetadataList = []
 
         # Group by SessionId
         grouped = df.groupby('SessionId')
 
         for session_id, group_df in grouped:
-            event_seq = group_df[event_column].tolist()
+            event_seq: List[Any] = group_df[event_column].tolist()
 
             # Determine label
             if label_column in group_df.columns:
-                label = 1 if (group_df[label_column] == 'Anomaly').any() else 0
+                label: int = 1 if (group_df[label_column] == 'Anomaly').any() else 0
             else:
                 label = 0
 
             sequences.append(event_seq)
             labels.append(label)
+            
+            time_span: float = (
+                group_df[time_column].max() - group_df[time_column].min()
+            ).total_seconds()
+            
             metadata.append({
                 'SessionId': int(session_id),
                 'length': len(event_seq),
                 'strategy': 'time_window',
-                'time_span_seconds': (group_df[time_column].max() - group_df[time_column].min()).total_seconds()
+                'time_span_seconds': time_span
             })
 
         logger.info(f"Created {len(sequences)} time window sequences")
         logger.info(f"Normal: {labels.count(0)}, Anomaly: {labels.count(1)}")
 
         return sequences, labels, metadata
-
-
-# Test the SequenceBuilder
-if __name__ == "__main__":
-    print("=" * 60)
-    print("Testing SequenceBuilder")
-    print("=" * 60)
-
-    # Create test data
-    test_data = {
-        'EventId': ['E1', 'E2', 'E3', 'E1', 'E4', 'E2', 'E5', 'E1', 'E2', 'E3'],
-        'Content': [
-            'Receiving block blk_123 src: /10.0.0.1 dest: /10.0.0.2',
-            'PacketResponder 1 for block blk_123 terminating',
-            'Received block blk_123 of size 1024 from /10.0.0.1',
-            'Receiving block blk_456 src: /10.0.0.3 dest: /10.0.0.4',
-            'Error processing block blk_456',
-            'PacketResponder 2 for block blk_456 terminating',
-            'BLOCK allocateBlock: /data/file.txt blk_789',
-            'Receiving block blk_789 src: /10.0.0.5 dest: /10.0.0.6',
-            'PacketResponder 1 for block blk_789 terminating',
-            'Received block blk_789 of size 2048 from /10.0.0.5',
-        ],
-        'Label': ['Normal', 'Normal', 'Normal', 'Anomaly', 'Anomaly', 'Anomaly',
-                  'Normal', 'Normal', 'Normal', 'Normal']
-    }
-
-    df = pd.DataFrame(test_data)
-
-    print("\nTest 1: Block ID Grouping")
-    print("-" * 60)
-    builder1 = SequenceBuilder(grouping_strategy='block_id', block_id_regex=r'(blk_\d+)')
-    sequences1, labels1, metadata1 = builder1.build_sequences(df)
-
-    for i, (seq, label, meta) in enumerate(zip(sequences1, labels1, metadata1)):
-        print(f"Block {meta['BlockId']}: {seq} | Label: {'Anomaly' if label == 1 else 'Normal'} | Length: {meta['length']}")
-
-    print(f"\nTotal sequences: {len(sequences1)}")
-    print(f"Normal: {labels1.count(0)}, Anomaly: {labels1.count(1)}")
-
-    print("\n" + "=" * 60)
-    print("\nTest 2: Sliding Window")
-    print("-" * 60)
-    builder2 = SequenceBuilder(grouping_strategy='sliding_window', window_size=3, stride=2)
-    sequences2, labels2, metadata2 = builder2.build_sequences(df)
-
-    for i, (seq, label, meta) in enumerate(zip(sequences2[:5], labels2[:5], metadata2[:5])):  # Show first 5
-        print(f"Window {i+1}: {seq} | Label: {'Anomaly' if label == 1 else 'Normal'}")
-
-    print(f"\nTotal windows: {len(sequences2)}")
-    print(f"Normal: {labels2.count(0)}, Anomaly: {labels2.count(1)}")
-
-    print("\n" + "=" * 60)
-    print("SequenceBuilder tests complete!")
-    print("=" * 60)
