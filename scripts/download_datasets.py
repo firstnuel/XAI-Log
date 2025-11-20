@@ -59,14 +59,3 @@ def download_and_extract(url, data_dir='data'):
     
     return filepath
 
-# Example usage
-if __name__ == "__main__":
-    # Download BGL dataset
-    # bgl_url = "https://zenodo.org/records/8196385/files/BGL.zip"
-    # download_and_extract(bgl_url, data_dir='data')
-
-    # hdfs_url = "https://zenodo.org/records/8196385/files/HDFS_v1.zip"
-    # download_and_extract(hdfs_url, data_dir='data/hdfs')
-
-    # No-op to ensure this block is not empty when usage is commented out
-    pass

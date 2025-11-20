@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 import pickle
 import os
-from pathlib import Path
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -36,7 +35,7 @@ def load_hdfs_loghub(data_dir='data/hdfs/preprocessed'):
     if not os.path.exists(npz_file):
         raise FileNotFoundError(f"HDFS.npz not found at {npz_file}")
 
-    data = np.load(npz_file)
+    data = np.load(npz_file, allow_pickle=True)
 
     x_data = data['x_data']
     y_data = data['y_data']
@@ -46,16 +45,22 @@ def load_hdfs_loghub(data_dir='data/hdfs/preprocessed'):
     logger.info(f"  - Labels: {y_data.shape}")
     logger.info(f"  - Normal: {np.sum(y_data == 0)}, Anomaly: {np.sum(y_data == 1)}")
 
-    # Try to load templates for vocabulary
-    templates_file = os.path.join(data_dir, 'HDFS.log_templates.csv')
+    # Load vocabulary (prefer .pkl, fall back to .json)
     vocab = None
+    vocab_pkl = os.path.join(data_dir, 'vocab.pkl')
+    vocab_json = os.path.join(data_dir, 'vocab.json')
 
-    if os.path.exists(templates_file):
-        templates_df = pd.read_csv(templates_file)
-        # Create vocabulary from EventIds
-        vocab = {event_id: idx + 1 for idx, event_id in enumerate(templates_df['EventId'])}
-        vocab['<PAD>'] = 0
-        logger.info(f"  - Vocabulary size: {len(vocab)}")
+    if os.path.exists(vocab_pkl):
+        with open(vocab_pkl, 'rb') as f:
+            vocab = pickle.load(f)
+        logger.info(f"  - Loaded vocabulary from vocab.pkl: {len(vocab)} events")
+    elif os.path.exists(vocab_json):
+        import json
+        with open(vocab_json, 'r') as f:
+            vocab = json.load(f)
+        logger.info(f"  - Loaded vocabulary from vocab.json: {len(vocab)} events")
+    else:
+        logger.warning("  - No vocabulary file found (vocab.pkl or vocab.json)")
 
     return x_data, y_data, vocab
 
@@ -210,53 +215,49 @@ def get_dataset_info(data_dir):
         return None
 
 
-# Test the data loader
-if __name__ == "__main__":
-    print("=" * 70)
-    print("Testing Data Loader Utilities")
-    print("=" * 70)
+def filter_normal_samples(X, y, verbose=True):
+    """
+    Filter dataset to keep only normal samples (for semi-supervised learning).
 
-    # Test 1: Load HDFS from LogHub
-    print("\n[Test 1] Load HDFS (LogHub preprocessing)")
-    print("-" * 70)
-    try:
-        x_hdfs, y_hdfs, vocab_hdfs = load_hdfs_loghub('data/hdfs/preprocessed')
-        print(f"✓ Loaded HDFS data successfully")
-        print(f"  - x_data: {x_hdfs.shape}")
-        print(f"  - y_data: {y_hdfs.shape}")
-        print(f"  - vocab: {len(vocab_hdfs) if vocab_hdfs else 'N/A'}")
+    CRITICAL for algorithms like DeepLog that should only train on normal data.
+    DeepLog is semi-supervised and must NOT see anomalies during training.
 
-        # Create splits
-        splits = create_train_val_test_split(x_hdfs, y_hdfs)
-        print(f"✓ Created train/val/test splits")
+    Args:
+        X: Feature matrix or sequences (numpy array or list)
+        y: Labels (0=normal, 1=anomaly)
+        verbose: Whether to print filtering statistics
 
-    except FileNotFoundError as e:
-        print(f"⚠ {str(e)}")
-        print("  (This is expected if HDFS data is not yet downloaded)")
+    Returns:
+        X_normal, y_normal: Filtered data containing only normal samples
 
-    # Test 2: Load from our preprocessing
-    print("\n[Test 2] Load from our preprocessing")
-    print("-" * 70)
-    test_dir = 'test_output'
-    if os.path.exists(os.path.join(test_dir, 'test_sequences.npz')):
-        # Rename for testing
-        import shutil
-        os.makedirs('test_output/mock_preprocessed', exist_ok=True)
-        shutil.copy(
-            'test_output/test_sequences.npz',
-            'test_output/mock_preprocessed/sequences.npz'
-        )
+    Example:
+        >>> X_train_normal, y_train_normal = filter_normal_samples(X_train, y_train)
+        >>> # Now train DeepLog only on normal data
+    """
+    if verbose:
+        logger.info("=" * 70)
+        logger.info("FILTERING TRAINING DATA FOR SEMI-SUPERVISED LEARNING")
+        logger.info("=" * 70)
+        logger.info(f"Original training size: {len(X)} samples")
+        logger.info(f"  Normal samples: {np.sum(y == 0):,} ({np.sum(y == 0)/len(y)*100:.2f}%)")
+        logger.info(f"  Anomaly samples: {np.sum(y == 1):,} ({np.sum(y == 1)/len(y)*100:.2f}%)")
 
-        try:
-            x_test, y_test, vocab_test, meta_test = load_preprocessed_data('test_output/mock_preprocessed')
-            print(f"✓ Loaded test data successfully")
-            print(f"  - x_data: {x_test.shape}")
-            print(f"  - y_data: {y_test.shape}")
-        except Exception as e:
-            print(f"✗ Error: {str(e)}")
+    # Get indices of normal samples (label == 0)
+    normal_indices = np.where(y == 0)[0]
+
+    # Filter data - keep only normal samples
+    if isinstance(X, list):
+        X_normal = [X[i] for i in normal_indices]
     else:
-        print("⚠ Test data not found (run test_pipeline.py first)")
+        X_normal = X[normal_indices]
 
-    print("\n" + "=" * 70)
-    print("Data loader tests complete!")
-    print("=" * 70)
+    y_normal = y[normal_indices]
+
+    if verbose:
+        logger.info(f"\nFiltered training size: {len(X_normal):,} samples (NORMAL ONLY)")
+        logger.info(f"Removed {len(X) - len(X_normal):,} anomalies from training set")
+        logger.info(f"✓ Training data is now pure normal samples")
+        logger.info("=" * 70)
+
+    return X_normal, y_normal
+
