@@ -4,28 +4,21 @@ Anomaly detection models
 Components:
 - baselines: Traditional ML baselines (Isolation Forest, etc.)
 - deeplog: DeepLog LSTM model for log anomaly detection
-- loganomaly: LogAnomaly model with attention (TODO)
+- loganomaly: LogAnomaly model with attention mechanism
+- loggpt: LogGPT Transformer model for log anomaly detection
 """
 
-from .baselines import IsolationForestBaseline
-from .deeplog import (
-    DeepLogModel,
-    DeepLogTrainer,
-    LogSequenceDataset,
-    create_data_loaders,
-    evaluate_model,
-    print_metrics
-)
+from src.models.baselines import IsolationForestBaseline
+from src.models.deeplog import DeepLogModel
+from src.models.loganomaly import LogAnomalyModel
+from src.models.loggptmodel import LogGPTModel
 
 __all__ = [
     # Baseline models
     'IsolationForestBaseline',
 
-    # DeepLog
+    # Deep Learning models
     'DeepLogModel',
-    'DeepLogTrainer',
-    'LogSequenceDataset',
-    'create_data_loaders',
-    'evaluate_model',
-    'print_metrics',
+    'LogAnomalyModel',
+    'LogGPTModel',
 ]

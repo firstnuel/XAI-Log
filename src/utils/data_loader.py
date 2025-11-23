@@ -5,60 +5,79 @@ Load preprocessed log data for model training and evaluation.
 Compatible with both HDFS (LogHub preprocessed) and BGL (our preprocessing).
 """
 
+import glob
 import numpy as np
 import pandas as pd
 import pickle
+import json
 import os
 import logging
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def load_hdfs_loghub(data_dir='data/hdfs/preprocessed'):
+def load_vocab(path):
     """
-    Load HDFS data preprocessed by LogHub.
+    Load vocabulary from JSON or PKL file.
+    
+    Args:
+        path: Path to vocabulary file (.json or .pkl)
+        
+    Returns:
+        Dictionary mapping event to index, or None if file doesn't exist
+    """
+    path = Path(path)
+    
+    if not path.exists():
+        return None
+    
+    if path.suffix == '.json':
+        with open(path, 'r') as f:
+            return json.load(f)
+    elif path.suffix == '.pkl':
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+    else:
+        raise ValueError(f"Unsupported vocabulary format: {path.suffix}. Use .json or .pkl")
+
+def load_loghub(data_dir):
+    """
+    Load data preprocessed by LogHub.
 
     Args:
-        data_dir: Directory containing LogHub's preprocessed HDFS data
+        data_dir: Directory containing LogHub's preprocessed data
 
     Returns:
         x_data: Sequence matrix (num_sequences, max_length)
         y_data: Labels array (num_sequences,)
         vocab: Event to index mapping (if available)
     """
-    logger.info(f"Loading HDFS data from LogHub preprocessing: {data_dir}")
+    logger.info(f"Loading data from LogHub preprocessing: {data_dir}")
 
     # Load NPZ file
-    npz_file = os.path.join(data_dir, 'HDFS.npz')
+    npz_files = glob.glob(os.path.join(data_dir, '*.npz'))
+    if not npz_files:
+        raise FileNotFoundError(f".npz not found in {data_dir}")
 
-    if not os.path.exists(npz_file):
-        raise FileNotFoundError(f"HDFS.npz not found at {npz_file}")
-
-    data = np.load(npz_file, allow_pickle=True)
-
+    data = np.load(npz_files[0], allow_pickle=True)
     x_data = data['x_data']
     y_data = data['y_data']
 
-    logger.info(f"Loaded HDFS data:")
+    logger.info(f"Loaded data:")
     logger.info(f"  - Sequences: {x_data.shape}")
     logger.info(f"  - Labels: {y_data.shape}")
     logger.info(f"  - Normal: {np.sum(y_data == 0)}, Anomaly: {np.sum(y_data == 1)}")
 
     # Load vocabulary (prefer .pkl, fall back to .json)
-    vocab = None
     vocab_pkl = os.path.join(data_dir, 'vocab.pkl')
     vocab_json = os.path.join(data_dir, 'vocab.json')
 
-    if os.path.exists(vocab_pkl):
-        with open(vocab_pkl, 'rb') as f:
-            vocab = pickle.load(f)
-        logger.info(f"  - Loaded vocabulary from vocab.pkl: {len(vocab)} events")
-    elif os.path.exists(vocab_json):
-        import json
-        with open(vocab_json, 'r') as f:
-            vocab = json.load(f)
-        logger.info(f"  - Loaded vocabulary from vocab.json: {len(vocab)} events")
+    vocab = load_vocab(vocab_pkl) or load_vocab(vocab_json)
+    
+    if vocab:
+        logger.info(f"  - Loaded vocabulary: {len(vocab)} events")
     else:
         logger.warning("  - No vocabulary file found (vocab.pkl or vocab.json)")
 
@@ -95,15 +114,20 @@ def load_preprocessed_data(data_dir):
     logger.info(f"  - Labels: {y_data.shape}")
     logger.info(f"  - Normal: {np.sum(y_data == 0)}, Anomaly: {np.sum(y_data == 1)}")
 
-    # Load vocabulary
-    vocab_file = os.path.join(data_dir, 'vocabulary.pkl')
+    # Load vocabulary - try multiple formats
+    vocab_files = [
+        os.path.join(data_dir, 'vocab.pkl'),
+        os.path.join(data_dir, 'vocab.json')
+    ]
+    
     vocab = None
-
-    if os.path.exists(vocab_file):
-        with open(vocab_file, 'rb') as f:
-            vocab = pickle.load(f)
-        logger.info(f"  - Vocabulary size: {len(vocab)}")
-    else:
+    for vocab_file in vocab_files:
+        vocab = load_vocab(vocab_file)
+        if vocab:
+            logger.info(f"  - Vocabulary size: {len(vocab)}")
+            break
+    
+    if not vocab:
         logger.warning("  - Vocabulary file not found")
 
     # Load metadata (optional)
@@ -219,9 +243,6 @@ def filter_normal_samples(X, y, verbose=True):
     """
     Filter dataset to keep only normal samples (for semi-supervised learning).
 
-    CRITICAL for algorithms like DeepLog that should only train on normal data.
-    DeepLog is semi-supervised and must NOT see anomalies during training.
-
     Args:
         X: Feature matrix or sequences (numpy array or list)
         y: Labels (0=normal, 1=anomaly)
@@ -260,4 +281,3 @@ def filter_normal_samples(X, y, verbose=True):
         logger.info("=" * 70)
 
     return X_normal, y_normal
-
