@@ -392,6 +392,6 @@ class LogSeqTrainer:
         if is_cuda:
             return {'pin_memory': True, 'num_workers': 4}
         elif is_mps:
-            return {'pin_memory': True, 'num_workers': 2}
+            return {'pin_memory': False, 'num_workers': 4}
         else:
             return {'pin_memory': False, 'num_workers': 0}

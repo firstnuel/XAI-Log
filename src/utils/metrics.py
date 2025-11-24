@@ -85,7 +85,6 @@ def save_experiment_results(
     model,
     history,
     y_train, y_val, y_test,
-    max_len,
     metrics,
     batch_size,
     learning_rate,
@@ -94,6 +93,7 @@ def save_experiment_results(
     detection_method="next_event_prediction",
     use_attention=False,
     n_heads=None,
+    max_len=None,
 ):
     """
     Save experiment metadata, training stats, model config, and metrics to JSON.

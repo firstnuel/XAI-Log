@@ -1,0 +1,52 @@
+
+BGL DATASET SUMMARY FOR THESIS
+================================================================================
+
+1. DATASET OVERVIEW
+    - Source: BlueGene/L supercomputer at Lawrence Livermore National Labs
+    - System: 131,072 processors, 32,768GB memory
+    - Raw logs: 4,747,963 lines
+    - Preprocessing: Drain3 parser + sliding window (size=20)
+
+2. SEQUENCE STATISTICS
+    - Total sequences: 949,589
+    - Normal sequences: 868,556 (91.47%)
+    - Anomaly sequences: 81,033 (8.53%)
+    - Anomaly rate: 8.53%
+
+3. TEMPLATE STATISTICS
+    - Total templates discovered: 369
+    - Vocabulary size: 371
+    - Template diversity: HIGH (compared to HDFS's 29 templates)
+
+4. SEQUENCE CHARACTERISTICS
+    - Fixed window size: 20 events
+    - Sequence length (excluding padding):
+    * Mean: 20.00
+    * Median: 20
+    * Std: 0.00
+    * Range: [20, 20]
+
+    - Event diversity (unique events per sequence):
+    * Overall mean: 1.41
+    * Normal mean: 1.40
+    * Anomaly mean: 1.60
+
+    - Event repetition ratio (length / unique events):
+    * Normal mean: 17.37
+    * Anomaly mean: 17.24
+
+5. EVENT STATISTICS
+    - Total events (tokens): 18,991,780
+    - Unique events used: 370
+    - Events in normal sequences: 17,371,120
+    - Events in anomaly sequences: 1,620,660
+
+6. KEY INSIGHTS
+    - More complex system: 369 templates (vs 29 in HDFS)
+    - Better class balance: 853.35% anomalies (vs 2.93% in HDFS)
+    - Fixed-length sequences simplify sequential modeling
+    - Larger vocabulary requires more embedding capacity
+    - More training data available (949,589 sequences)
+
+================================================================================

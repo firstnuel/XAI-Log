@@ -1,0 +1,53 @@
+
+======================================================================
+HDFS DATASET SUMMARY REPORT
+For Thesis Chapter 5.1: Dataset Description
+======================================================================
+
+1. DATASET OVERVIEW
+   - Source: LogHub HDFS_v1
+   - Total Blocks: 575,061
+   - Total Raw Log Entries: ~11.2 million
+   - Unique Log Templates: 29
+   - Time Period: Benchmark workload execution
+
+2. LABEL DISTRIBUTION
+   - Normal Blocks: 558,223 (97.07%)
+   - Anomaly Blocks: 16,838 (2.93%)
+   - Class Imbalance Ratio: 1:33.2
+
+3. SEQUENCE CHARACTERISTICS
+   Overall:
+   - Mean Length: 19.43 events
+   - Median Length: 19 events
+   - Min Length: 2 events
+   - Max Length: 298 events
+   - Std Dev: 5.18
+
+   Normal Sequences:
+   - Mean Length: 19.50 events
+   - Median Length: 19 events
+   - Mean Unique Events: 7.26
+
+   Anomaly Sequences:
+   - Mean Length: 17.12 events
+   - Median Length: 20 events
+   - Mean Unique Events: 7.16
+
+4. EVENT DISTRIBUTION
+   - Total Event Occurrences: 11,175,629
+   - Most Frequent Event: E5 (1,723,232 times)
+   - Least Frequent Event: E24 (4 times)
+
+5. KEY OBSERVATIONS
+   - Anomaly sequences are shorter on average than normal sequences
+   - Normal sequences have more unique events on average
+   - Class imbalance present (anomaly rate: 2.93%)
+
+6. PREPROCESSING STATUS
+   - ✓ Log parsing completed (Drain algorithm)
+   - ✓ Sequences grouped by BlockId
+   - ✓ Labels assigned (manual labeling via handcrafted rules)
+   - ✓ Multiple formats available (CSV, NPZ)
+
+======================================================================
