@@ -86,7 +86,8 @@ class LogGPTModel(nn.Module):
             embd_pdrop=dropout,
             activation_function='gelu_new',
             use_cache=True,  # Critical for fast inference
-            output_attentions=True # Enabled for get_attention_weights
+            output_attentions=True,  # Enabled for get_attention_weights
+            attn_implementation="eager" 
         )
 
         # 2. The Backbone

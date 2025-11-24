@@ -15,7 +15,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict
 from tqdm import tqdm
 import time
 
@@ -277,17 +277,10 @@ class LogSeqTrainer:
         Detect anomalies using top-k prediction.
         An anomaly is detected if the actual next event is not in the top-k predictions.
 
-        Args:
-            test_loader (DataLoader): Test data loader
-            top_k (int): Number of top predictions to consider
-            return_scores (bool): If True, also return anomaly scores (default: True)
-
         Returns:
-            Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
-                - predictions: Binary predictions (0=normal, 1=anomaly)
-                - labels: True labels
-                - scores: Anomaly scores (proportion of events NOT in top-k, range [0, 1])
-                  Only returned if return_scores=True
+            predictions: Binary predictions (0=normal, 1=anomaly)
+            labels: True labels
+            scores: Anomaly scores (proportion of events NOT in top-k), only returned if return_scores=True
         """
         self.model.eval()
         all_predictions = []
@@ -378,16 +371,8 @@ class LogSeqTrainer:
         """
         Get optimized DataLoader keyword arguments for the current device.
 
-        Returns recommended settings for pin_memory and num_workers based on
-        whether the device is CUDA, MPS, or CPU.
-
         Returns:
-            dict: Keyword arguments to pass to DataLoader constructor.
-
-        Example:
-            trainer = LogSeqTrainer(model, device='cuda')
-            loader_kwargs = trainer.get_dataloader_kwargs()
-            train_loader = DataLoader(dataset, batch_size=32, **loader_kwargs)
+            dict: Keyword args for DataLoader
         """
         if self._is_cuda:
             return {'pin_memory': True, 'num_workers': 4}
@@ -399,20 +384,7 @@ class LogSeqTrainer:
     @staticmethod
     def get_optimal_dataloader_kwargs(device: str) -> Dict:
         """
-        Static method to get optimized DataLoader kwargs before trainer instantiation.
-
-        Useful when creating DataLoaders before the trainer is initialized.
-
-        Args:
-            device (str): Target device ('cuda', 'mps', or 'cpu')
-
-        Returns:
-            dict: Keyword arguments for DataLoader (pin_memory, num_workers)
-
-        Example:
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            loader_kwargs = LogSeqTrainer.get_optimal_dataloader_kwargs(device)
-            train_loader = DataLoader(dataset, batch_size=32, **loader_kwargs)
+        Static method to get DataLoader kwargs before trainer instantiation.
         """
         is_cuda = device == 'cuda' and torch.cuda.is_available()
         is_mps = device == 'mps' and torch.backends.mps.is_available()

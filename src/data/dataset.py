@@ -49,7 +49,9 @@ def create_data_loaders(
     X_val, y_val,
     X_test, y_test,
     batch_size=64,
-    num_workers=0
+    num_workers=0,
+    pin_memory=None,
+    persistent_workers=None
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Create PyTorch DataLoaders for training, validation, and testing.
@@ -60,10 +62,22 @@ def create_data_loaders(
         X_test, y_test: Test sequences and labels
         batch_size (int): Batch size for training
         num_workers (int): Number of workers for data loading
+        pin_memory (bool, optional): Pin memory for faster GPU transfer.
+            Auto-detected if None (True for CUDA/MPS, False for CPU)
+        persistent_workers (bool, optional): Keep workers alive between epochs.
+            Auto-set to True if num_workers > 0 and not specified.
 
     Returns:
         tuple: (train_loader, val_loader, test_loader)
     """
+    # Auto-detect optimal settings if not specified
+    if pin_memory is None:
+        is_accelerated = torch.cuda.is_available() or torch.backends.mps.is_available()
+        pin_memory = is_accelerated
+
+    if persistent_workers is None:
+        persistent_workers = num_workers > 0
+
     train_dataset = LogSequenceDataset(X_train, y_train)
     val_dataset = LogSequenceDataset(X_val, y_val)
     test_dataset = LogSequenceDataset(X_test, y_test)
@@ -73,7 +87,8 @@ def create_data_loaders(
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers if num_workers > 0 else False
     )
 
     val_loader = DataLoader(
@@ -81,7 +96,8 @@ def create_data_loaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers if num_workers > 0 else False
     )
 
     test_loader = DataLoader(
@@ -89,7 +105,8 @@ def create_data_loaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers if num_workers > 0 else False
     )
 
     return train_loader, val_loader, test_loader
