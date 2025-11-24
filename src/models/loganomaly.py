@@ -87,44 +87,49 @@ class LogAnomalyModel(nn.Module):
         self.fc = nn.Linear(hidden_dim, vocab_size)
 
     def forward(self, x, hidden=None):
-        """
-        Forward pass through the model.
-        """
-        batch_size, seq_len = x.shape
+            """
+            Forward pass that returns Logits AND Attention Weights.
+            """
+            batch_size, seq_len = x.shape
 
-        # Embed and pass through LSTM
-        embedded = self.embedding(x)
-        lstm_out, hidden_state = self.lstm(embedded, hidden)
-        lstm_out = self.dropout_layer(lstm_out)
+            # 1. Embed and LSTM
+            embedded = self.embedding(x)
+            lstm_out, hidden_state = self.lstm(embedded, hidden)
+            lstm_out = self.dropout_layer(lstm_out)
 
-        if self.use_attention:
-            # Generate Causal Mask to ensure autoregressive property
-            attn_mask = torch.triu(
-                torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool),
-                diagonal=1
-            )
-            
-            # Generate Padding Mask
-            key_padding_mask = (x == 0)
+            attn_weights = None # Placeholder if attention is off
 
-            # Apply Multi-Head Attention
-            attn_output, _ = self.attention(
-                query=lstm_out, 
-                key=lstm_out, 
-                value=lstm_out, 
-                attn_mask=attn_mask,
-                key_padding_mask=key_padding_mask
-            )
-            
-            # Residual Connection and Normalization
-            final_out = self.layer_norm(lstm_out + attn_output)
-        else:
-            final_out = lstm_out
+            if self.use_attention:
+                # Generate Causal Mask (Prevent peeking at future)
+                # True = Masked (Ignore), False = Unmasked (Attend)
+                attn_mask = torch.triu(
+                    torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool),
+                    diagonal=1
+                )
+                
+                # Generate Padding Mask (Ignore padding 0s)
+                key_padding_mask = (x == 0)
 
-        # Project to Vocabulary
-        logits = self.fc(final_out)
+                # 2. Multi-Head Attention
+                attn_output, attn_weights = self.attention(
+                    query=lstm_out, 
+                    key=lstm_out, 
+                    value=lstm_out, 
+                    attn_mask=attn_mask,
+                    key_padding_mask=key_padding_mask,
+                    need_weights=True,
+                    average_attn_weights=True
+                )
+                
+                # Residual Connection
+                final_out = self.layer_norm(lstm_out + attn_output)
+            else:
+                final_out = lstm_out
 
-        return logits, hidden_state
+            # 3. Project to Vocabulary
+            logits = self.fc(final_out)
+
+            return logits, hidden_state, attn_weights
 
     def predict_next(self, x, top_k=10):
         """

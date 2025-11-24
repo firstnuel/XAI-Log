@@ -3,6 +3,11 @@ Generic training engine for log sequence models.
 
 This module provides a model-agnostic trainer that can work with any
 PyTorch model for next-event prediction tasks (DeepLog, LogAnomaly, etc.).
+
+Includes automatic device-specific optimizations:
+- CUDA: AMP, cudnn.benchmark, non_blocking transfers
+- MPS/CUDA: pin_memory, num_workers for DataLoader
+- CPU: No special optimizations
 """
 
 import torch
@@ -10,7 +15,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import numpy as np
-from typing import Dict, Optional
+from typing import Dict, Tuple
 from tqdm import tqdm
 import time
 
@@ -40,6 +45,18 @@ class LogSeqTrainer:
         self.device = device
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
+
+        # Device detection for conditional optimizations
+        self._is_cuda = device == 'cuda' and torch.cuda.is_available()
+        self._is_mps = device == 'mps' and torch.backends.mps.is_available()
+        self._is_accelerated = self._is_cuda or self._is_mps
+
+        # CUDA-specific optimizations
+        if self._is_cuda:
+            torch.backends.cudnn.benchmark = True
+            self._scaler = torch.amp.GradScaler('cuda')
+        else:
+            self._scaler = None
 
         # Get vocab_size from model (assuming model has this attribute)
         self.vocab_size = getattr(model, 'vocab_size', None)
@@ -77,28 +94,46 @@ class LogSeqTrainer:
         num_batches = 0
 
         for input_seq, target_seq, _ in tqdm(train_loader, desc="Training"):
-            input_seq = input_seq.to(self.device)
-            target_seq = target_seq.to(self.device)
+            # Transfer to device (non_blocking only beneficial for CUDA with pinned memory)
+            input_seq = input_seq.to(self.device, non_blocking=self._is_cuda)
+            target_seq = target_seq.to(self.device, non_blocking=self._is_cuda)
 
-            # Forward pass
-            logits, _ = self.model(input_seq)
+            if self._is_cuda:
+                # CUDA path: Use Automatic Mixed Precision
+                with torch.amp.autocast('cuda'):
+                    outputs = self.model(input_seq)
+                    if isinstance(outputs, tuple):
+                        logits = outputs[0]
+                    else:
+                        logits = outputs
+                    loss = self.criterion(
+                        logits.reshape(-1, self.vocab_size),
+                        target_seq.reshape(-1)
+                    )
 
-            # Compute loss
-            # Reshape for CrossEntropyLoss: [batch_size * seq_len, vocab_size] and [batch_size * seq_len]
-            loss = self.criterion(
-                logits.reshape(-1, self.vocab_size),
-                target_seq.reshape(-1)
-            )
+                # Scaled backward pass for AMP
+                self.optimizer.zero_grad()
+                self._scaler.scale(loss).backward()
+                self._scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
+                self._scaler.step(self.optimizer)
+                self._scaler.update()
+            else:
+                # CPU/MPS path: Standard training
+                outputs = self.model(input_seq)
+                if isinstance(outputs, tuple):
+                    logits = outputs[0]
+                else:
+                    logits = outputs
+                loss = self.criterion(
+                    logits.reshape(-1, self.vocab_size),
+                    target_seq.reshape(-1)
+                )
 
-            # Backward pass
-            self.optimizer.zero_grad()
-            loss.backward()
-
-            # Gradient clipping to prevent exploding gradients
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
-
-            # Update weights
-            self.optimizer.step()
+                self.optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
+                self.optimizer.step()
 
             total_loss += loss.item()
             num_batches += 1
@@ -122,17 +157,32 @@ class LogSeqTrainer:
 
         with torch.no_grad():
             for input_seq, target_seq, _ in val_loader:
-                input_seq = input_seq.to(self.device)
-                target_seq = target_seq.to(self.device)
+                input_seq = input_seq.to(self.device, non_blocking=self._is_cuda)
+                target_seq = target_seq.to(self.device, non_blocking=self._is_cuda)
 
-                # Forward pass
-                logits, _ = self.model(input_seq)
-
-                # Compute loss
-                loss = self.criterion(
-                    logits.reshape(-1, self.vocab_size),
-                    target_seq.reshape(-1)
-                )
+                if self._is_cuda:
+                    # CUDA path: Use AMP for inference too
+                    with torch.amp.autocast('cuda'):
+                        outputs = self.model(input_seq)
+                        if isinstance(outputs, tuple):
+                            logits = outputs[0]
+                        else:
+                            logits = outputs
+                        loss = self.criterion(
+                            logits.reshape(-1, self.vocab_size),
+                            target_seq.reshape(-1)
+                        )
+                else:
+                    # CPU/MPS path
+                    outputs = self.model(input_seq)
+                    if isinstance(outputs, tuple):
+                        logits = outputs[0]
+                    else:
+                        logits = outputs
+                    loss = self.criterion(
+                        logits.reshape(-1, self.vocab_size),
+                        target_seq.reshape(-1)
+                    )
 
                 total_loss += loss.item()
                 num_batches += 1
@@ -246,11 +296,23 @@ class LogSeqTrainer:
 
         with torch.no_grad():
             for input_seq, target_seq, labels in tqdm(test_loader, desc="Detecting anomalies"):
-                input_seq = input_seq.to(self.device)
-                target_seq = target_seq.to(self.device)
+                input_seq = input_seq.to(self.device, non_blocking=self._is_cuda)
+                target_seq = target_seq.to(self.device, non_blocking=self._is_cuda)
 
-                # 1. Get Logits
-                logits, _ = self.model(input_seq)
+                # Forward pass with optional AMP for CUDA
+                if self._is_cuda:
+                    with torch.amp.autocast('cuda'):
+                        outputs = self.model(input_seq)
+                        if isinstance(outputs, tuple):
+                            logits = outputs[0]
+                        else:
+                            logits = outputs
+                else:
+                    outputs = self.model(input_seq)
+                    if isinstance(outputs, tuple):
+                        logits = outputs[0]
+                    else:
+                        logits = outputs
 
                 # 2. Get Top-K Indices
                 _, top_indices = torch.topk(logits, k=top_k, dim=-1)
@@ -266,21 +328,15 @@ class LogSeqTrainer:
                 mask = (target_seq != 0)
                 is_anomaly_masked = is_anomaly & mask
 
-                # 6. Aggregate per sequence (if any log in seq is anomaly -> seq is anomaly)
+                # 6. Aggregate per sequence
                 seq_is_anomalous = is_anomaly_masked.any(dim=1).cpu().numpy().astype(int)
-
                 all_predictions.extend(seq_is_anomalous)
-
-                # Assuming 'labels' in the dataloader is already 0 (normal) or 1 (anomaly)
                 all_labels.extend(labels.cpu().numpy().astype(int))
 
-                # 7. Compute anomaly scores (proportion of events NOT in top-k)
+                # 7. Compute scores
                 if return_scores:
-                    # Count anomalous events per sequence (excluding padding)
                     num_anomalous = is_anomaly_masked.sum(dim=1).float()
-                    # Count valid (non-padding) events per sequence
                     num_valid = mask.sum(dim=1).float()
-                    # Compute proportion (handle division by zero)
                     anomaly_scores = torch.where(
                         num_valid > 0,
                         num_anomalous / num_valid,
@@ -317,3 +373,53 @@ class LogSeqTrainer:
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
         print(f"✓ Model loaded from {filepath}")
+
+    def get_dataloader_kwargs(self) -> Dict:
+        """
+        Get optimized DataLoader keyword arguments for the current device.
+
+        Returns recommended settings for pin_memory and num_workers based on
+        whether the device is CUDA, MPS, or CPU.
+
+        Returns:
+            dict: Keyword arguments to pass to DataLoader constructor.
+
+        Example:
+            trainer = LogSeqTrainer(model, device='cuda')
+            loader_kwargs = trainer.get_dataloader_kwargs()
+            train_loader = DataLoader(dataset, batch_size=32, **loader_kwargs)
+        """
+        if self._is_cuda:
+            return {'pin_memory': True, 'num_workers': 4}
+        elif self._is_mps:
+            return {'pin_memory': True, 'num_workers': 2}
+        else:
+            return {'pin_memory': False, 'num_workers': 0}
+
+    @staticmethod
+    def get_optimal_dataloader_kwargs(device: str) -> Dict:
+        """
+        Static method to get optimized DataLoader kwargs before trainer instantiation.
+
+        Useful when creating DataLoaders before the trainer is initialized.
+
+        Args:
+            device (str): Target device ('cuda', 'mps', or 'cpu')
+
+        Returns:
+            dict: Keyword arguments for DataLoader (pin_memory, num_workers)
+
+        Example:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            loader_kwargs = LogSeqTrainer.get_optimal_dataloader_kwargs(device)
+            train_loader = DataLoader(dataset, batch_size=32, **loader_kwargs)
+        """
+        is_cuda = device == 'cuda' and torch.cuda.is_available()
+        is_mps = device == 'mps' and torch.backends.mps.is_available()
+
+        if is_cuda:
+            return {'pin_memory': True, 'num_workers': 4}
+        elif is_mps:
+            return {'pin_memory': True, 'num_workers': 2}
+        else:
+            return {'pin_memory': False, 'num_workers': 0}

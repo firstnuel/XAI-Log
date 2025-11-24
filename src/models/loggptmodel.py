@@ -133,37 +133,39 @@ class LogGPTModel(nn.Module):
             print(f"LogGPT: Projecting semantic embeddings {input_dim}d -> {self.embedding_dim}d.")
 
     def forward(self, x: torch.Tensor, labels: torch.Tensor = None):
-        """
-        Forward pass.
-        
-        Args:
-            x: Input tokens [batch_size, seq_len]
-            labels: Target tokens [batch_size, seq_len] (optional, for training loss)
+            """
+            Forward pass with Explainability Support.
             
-        Returns:
-            logits: [batch_size, seq_len, vocab_size]
-            loss: Scalar tensor (if labels provided, else None)
-        """
-        inputs_embeds = None
-        input_ids = x
+            Returns:
+                logits: [batch_size, seq_len, vocab_size]
+                loss: Scalar tensor
+                attentions: [batch_size, seq_len, seq_len] (Averaged from last layer)
+            """
+            inputs_embeds = None
+            input_ids = x
 
-        # If using projected semantic embeddings, we calculate embeddings manually
-        # and bypass the internal lookup table
-        if self.use_projection:
-            # Look up in frozen semantic weights
-            # F.embedding handles the lookup [batch, seq] -> [batch, seq, sem_dim]
-            sem_embeds = F.embedding(x, self.frozen_embeddings)
-            # Project to model dimension
-            inputs_embeds = self.embedding_projection(sem_embeds)
-            input_ids = None # We pass embeds directly, not IDs
+            # ... (Your existing embedding logic) ...
+            if self.use_projection:
+                sem_embeds = F.embedding(x, self.frozen_embeddings)
+                inputs_embeds = self.embedding_projection(sem_embeds)
+                input_ids = None 
 
-        outputs = self.backbone(
-            input_ids=input_ids,
-            inputs_embeds=inputs_embeds,
-            labels=labels
-        )
+            outputs = self.backbone(
+                input_ids=input_ids,
+                inputs_embeds=inputs_embeds,
+                labels=labels,
+                output_attentions=True # Ensure attentions are returned
+            )
 
-        return outputs.logits, outputs.loss
+            # Extract and process attention weights
+            last_layer_attn = outputs.attentions[-1]
+            
+            # Average across all heads to get a single 2D matrix per sequence
+            # Shape becomes: [batch_size, seq_len, seq_len]
+            avg_attn = last_layer_attn.mean(dim=1)
+
+            # Return tuple compatible with AnomalyExplainer
+            return outputs.logits, outputs.loss, avg_attn
 
     def predict_next(self, x: torch.Tensor, top_k: int = 10):
         """
